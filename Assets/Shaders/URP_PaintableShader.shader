@@ -17,57 +17,41 @@ Shader "Universal Render Pipeline/URP_Paintable"
         Pass
         {
             Name "ForwardLit"
-            Tags{"LightMode"="UniversalForward"}
+            Tags{ "LightMode"="UniversalForward" }
             HLSLPROGRAM
-            #pragma vertex   vert
+            #pragma target 3.0
+            #pragma vertex vert
             #pragma fragment frag
-            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
-            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
-            #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
-            #pragma multi_compile _ _SHADOWS_SOFT
-            #pragma multi_compile _ _MIXED_LIGHTING_SUBTRACTIVE
-            #pragma multi_compile_fragment _ _SCREEN_SPACE_OCCLUSION
-            #pragma multi_compile _ LIGHTMAP_ON
-            #pragma multi_compile _ DIRLIGHTMAP_COMBINED
-            #pragma multi_compile _ DEBUG_DISPLAY
             #pragma multi_compile_instancing
             #pragma multi_compile_fog
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
-            TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
-            TEXTURE2D(_PaintTex); SAMPLER(sampler_PaintTex);
+            #include "UnityCG.cginc"
+
+            sampler2D _MainTex;
+            float4 _MainTex_ST;
+            sampler2D _PaintTex;
+
+            #ifndef CBUFFER_START
+            #define CBUFFER_START(name) cbuffer name {
+            #define CBUFFER_END }
+            #endif
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
-                float4 _MainTex_ST;
                 float  _PaintIntensity;
                 float  _Smoothness;
                 float  _Metallic;
-            CBUFFER_END
+            CBUFFER_END;
 
-            float3x3 BuildTangentToWorld(float3 normalWS)
-            {
-                float3 tangentWS = normalize(cross(float3(0, 1, 0), normalWS));
-                if (all(abs(tangentWS) < 1e-5))
-                {
-                    tangentWS = normalize(cross(float3(1, 0, 0), normalWS));
-                }
-                float3 bitangentWS = cross(normalWS, tangentWS);
-                return float3x3(tangentWS, bitangentWS, normalWS);
-            }
+            CBUFFER_START(UnityPerMainLight)
+                float4 _MainLightPosition;
+                float4 _MainLightColor;
+            CBUFFER_END;
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
                 float3 normalOS : NORMAL;
-                float4 tangentOS : TANGENT;
                 float2 uv : TEXCOORD0;
-            #ifdef LIGHTMAP_ON
-                float2 lightmapUV : TEXCOORD1;
-            #endif
-            #ifdef DYNAMICLIGHTMAP_ON
-                float2 dynamicLightmapUV : TEXCOORD2;
-            #endif
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -75,16 +59,10 @@ Shader "Universal Render Pipeline/URP_Paintable"
             {
                 float4 positionCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
-                half3 normalWS : TEXCOORD1;
+                float3 normalWS : TEXCOORD1;
                 float2 uv : TEXCOORD2;
                 float3 viewDirWS : TEXCOORD3;
-                DECLARE_LIGHTMAP_OR_SH(lightmapUV, vertexSH, 4);
-            #ifdef DYNAMICLIGHTMAP_ON
-                float2 dynamicLightmapUV : TEXCOORD5;
-            #endif
-            #ifdef REQUIRES_SHADOW_COORD
-                float4 shadowCoord : TEXCOORD6;
-            #endif
+                UNITY_FOG_COORDS(4)
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -93,33 +71,56 @@ Shader "Universal Render Pipeline/URP_Paintable"
             {
                 Varyings o;
                 UNITY_SETUP_INSTANCE_ID(IN);
-                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
+                UNITY_INITIALIZE_OUTPUT(Varyings, o);
                 UNITY_TRANSFER_INSTANCE_ID(IN, o);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
 
-                VertexPositionInputs positionInputs = GetVertexPositionInputs(IN.positionOS.xyz);
-                VertexNormalInputs normalInputs = GetVertexNormalInputs(IN.normalOS, IN.tangentOS);
-
-                o.positionCS = positionInputs.positionCS;
-                o.positionWS = positionInputs.positionWS;
-                o.normalWS = NormalizeNormalPerVertex(normalInputs.normalWS);
+                float4 worldPos = mul(unity_ObjectToWorld, IN.positionOS);
+                o.positionCS = mul(UNITY_MATRIX_VP, worldPos);
+                o.positionWS = worldPos.xyz;
+                o.normalWS = UnityObjectToWorldNormal(IN.normalOS);
                 o.uv = TRANSFORM_TEX(IN.uv, _MainTex);
-                o.viewDirWS = GetWorldSpaceViewDir(o.positionWS);
+                o.viewDirWS = _WorldSpaceCameraPos - o.positionWS;
 
-#ifdef LIGHTMAP_ON
-                OUTPUT_LIGHTMAP_UV(IN.lightmapUV, unity_LightmapST, o.lightmapUV);
-#else
-                OUTPUT_SH(o.normalWS, o.vertexSH);
-#endif
-
-#ifdef DYNAMICLIGHTMAP_ON
-                o.dynamicLightmapUV = IN.dynamicLightmapUV * unity_DynamicLightmapST.xy + unity_DynamicLightmapST.zw;
-#endif
-
-#ifdef REQUIRES_SHADOW_COORD
-                o.shadowCoord = GetShadowCoord(positionInputs);
-#endif
-
+                UNITY_TRANSFER_FOG(o, o.positionCS);
                 return o;
+            }
+
+            float3 ComputeAmbient(float3 normalWS)
+            {
+                return ShadeSH9(float4(normalWS, 1.0)).rgb;
+            }
+
+            float3 GetMainLightDirection(float3 positionWS)
+            {
+                float3 lightVector = _MainLightPosition.xyz;
+                if (_MainLightPosition.w == 0.0)
+                {
+                    return normalize(-lightVector);
+                }
+                else
+                {
+                    return normalize(lightVector - positionWS);
+                }
+            }
+
+            float3 ComputeDiffuse(float3 diffuseColor, float3 normalWS, float3 lightDir, float3 lightColor)
+            {
+                float ndotl = saturate(dot(normalWS, lightDir));
+                return diffuseColor * lightColor * ndotl;
+            }
+
+            float3 ComputeSpecular(float3 specColor, float3 normalWS, float3 viewDir, float3 lightDir, float3 lightColor, float smoothness)
+            {
+                float ndotl = saturate(dot(normalWS, lightDir));
+                if (ndotl <= 0.0)
+                    return 0;
+
+                float3 halfDir = normalize(lightDir + viewDir);
+                float ndoth = saturate(dot(normalWS, halfDir));
+                float specPower = lerp(8.0, 512.0, saturate(smoothness));
+                float spec = pow(ndoth, specPower);
+                return specColor * lightColor * spec * ndotl;
             }
 
             half4 frag(Varyings IN) : SV_Target
@@ -127,47 +128,33 @@ Shader "Universal Render Pipeline/URP_Paintable"
                 UNITY_SETUP_INSTANCE_ID(IN);
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(IN);
 
-                half3 normalWS = NormalizeNormalPerPixel(IN.normalWS);
+                float3 normalWS = normalize(IN.normalWS);
+                float3 viewDir = normalize(IN.viewDirWS);
 
-                InputData inputData = (InputData)0;
-                inputData.positionWS = IN.positionWS;
-                inputData.normalWS = normalWS;
-                inputData.viewDirectionWS = SafeNormalize(IN.viewDirWS);
-#ifdef REQUIRES_SHADOW_COORD
-                inputData.shadowCoord = IN.shadowCoord;
-#else
-                inputData.shadowCoord = float4(0, 0, 0, 0);
-#endif
-                inputData.fogCoord = ComputeFogFactor(IN.positionCS.z);
-                inputData.vertexLighting = half3(0, 0, 0);
-                inputData.bakedGI = SAMPLE_GI(IN.lightmapUV, IN.vertexSH, normalWS);
-                inputData.shadowMask = SAMPLE_SHADOWMASK(IN.lightmapUV);
-                inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(IN.positionCS);
-                float3x3 t2w = BuildTangentToWorld(normalWS);
-                inputData.tangentToWorld = half3x3(
-                    half3(t2w[0].x, t2w[0].y, t2w[0].z),
-                    half3(t2w[1].x, t2w[1].y, t2w[1].z),
-                    half3(t2w[2].x, t2w[2].y, t2w[2].z));
-                inputData.occlusion = 1;
-
-                half4 baseAlbedo = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, IN.uv) * _BaseColor;
-                half4 paint = SAMPLE_TEXTURE2D(_PaintTex, sampler_PaintTex, IN.uv);
+                half4 baseAlbedo = tex2D(_MainTex, IN.uv) * _BaseColor;
+                half4 paint = tex2D(_PaintTex, IN.uv);
                 half mask = saturate(paint.a * _PaintIntensity);
-                half3 albedo = lerp(baseAlbedo.rgb, paint.rgb, mask);
+                float3 albedo = lerp(baseAlbedo.rgb, paint.rgb, mask);
 
-                SurfaceData surfaceData;
-                surfaceData.albedo = albedo;
-                surfaceData.specular = half3(0, 0, 0);
-                surfaceData.metallic = _Metallic;
-                surfaceData.smoothness = _Smoothness;
-                surfaceData.normalTS = half3(0, 0, 1);
-                surfaceData.occlusion = 1;
-                surfaceData.emission = half3(0, 0, 0);
-                surfaceData.alpha = 1;
+                float metallic = saturate(_Metallic);
+                float smoothness = saturate(_Smoothness);
+                float3 diffuseColor = albedo * (1.0 - metallic);
+                float3 specColor = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
 
-                half4 color = UniversalFragmentPBR(inputData, surfaceData);
-                color.rgb = MixFog(color.rgb, inputData.fogCoord);
-                return color;
+                float3 ambient = ComputeAmbient(normalWS) * diffuseColor;
+#ifdef UNITY_LIGHTMODEL_AMBIENT
+                ambient += UNITY_LIGHTMODEL_AMBIENT.rgb * diffuseColor;
+#endif
+
+                float3 lightDir = GetMainLightDirection(IN.positionWS);
+                float3 lightColor = _MainLightColor.rgb;
+                float3 diffuse = ComputeDiffuse(diffuseColor, normalWS, lightDir, lightColor);
+                float3 specular = ComputeSpecular(specColor, normalWS, viewDir, lightDir, lightColor, smoothness);
+
+                float3 color = ambient + diffuse + specular;
+                half4 outColor = half4(saturate(color), 1.0);
+                UNITY_APPLY_FOG(IN.fogCoord, outColor);
+                return outColor;
             }
             ENDHLSL
         }
