@@ -1,0 +1,9 @@
+node_modules/
+ui/node_modules/
+**/__pycache__/
+*.log
+ui/dist/
+.DS_Store
+
+# Cargo build artifacts
+src-tauri/target/

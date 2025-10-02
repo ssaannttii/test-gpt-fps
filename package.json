@@ -1,0 +1,12 @@
+{
+  "name": "piperdesk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "ui:dev": "pnpm --dir ui dev",
+    "ui:build": "pnpm --dir ui build",
+    "ui:test": "pnpm --dir ui test",
+    "ui:lint": "pnpm --dir ui lint"
+  }
+}
